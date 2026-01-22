@@ -14,28 +14,29 @@ Privacy & Ethics
 - No traffic decryption
 - Session-based logging only
 
+Destination Labeling
+-------------------
+The sniffer classifies destination IPs with human-readable comments:
+- MULTICAST (239.0.0.0/8): local service discovery (e.g., Spotify Connect, Bonjour)
+- BROADCAST (255.255.255.255): local network broadcast
+- PRIVATE LAN (10.x.x.x, 172.16.x.x–172.31.x.x, 192.168.x.x): local network
+- All other IPs are resolved via DNS if possible
+
+Example:
+DEST=239.195.0.23 (MULTICAST: local service discovery)
+
 Security-Oriented Features
 --------------------------
 1. Traffic Rate Monitoring
-   Detects unusually high packet rates from a single IP,
-   which may indicate misconfiguration, malware beaconing,
-   or denial-of-service behavior.
-
+   Detects unusually high packet rates from a single IP.
 2. SYN-Heavy Detection
-   Identifies excessive TCP SYN packets without matching FIN packets,
-   indicating scan-like or incomplete connection behavior.
-
+   Identifies excessive TCP SYN packets without matching FIN packets.
 3. Short-Lived Connection Churn
-   Flags hosts that rapidly open and close many TCP connections,
-   a common symptom of aggressive polling or faulty applications.
-
+   Flags hosts that rapidly open and close many TCP connections.
 4. Protocol Awareness
-   Labels likely QUIC traffic (UDP/443) and tracks protocol distribution
-   to highlight unexpected protocol usage.
-
+   Labels likely QUIC traffic (UDP/443) and tracks protocol distribution.
 5. Destination Awareness
-   Resolves destination IPs to hostnames using observed DNS responses.
-   This reflects backend infrastructure rather than website branding.
+   Resolves destination IPs to hostnames or labels as multicast/broadcast/private.
 
 End-of-Session Security Summary
 -------------------------------
@@ -44,11 +45,7 @@ neutral diagnostic language (e.g., "scan-like behavior observed").
 
 Limitations
 -----------
-This tool does not:
-- Detect malware definitively
-- Inspect encrypted traffic
-- Track browsing activity
-- Perform intrusion prevention
-
-The sniffer is intended for diagnostics, learning, and ethical network
-analysis only.
+- Does not inspect encrypted traffic
+- Does not track browsing activity
+- Does not detect malware definitively
+- Intended for diagnostics, learning, and ethical network analysis only

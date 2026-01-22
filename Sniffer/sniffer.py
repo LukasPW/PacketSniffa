@@ -234,6 +234,3 @@ except KeyboardInterrupt:
     print_summary()
     csvfile.close()
     sys.exit(0)
-
-# open terminal as admin and run : python Sniffer/sniffer.py
-# to check if it works run: scapy, in terminal
