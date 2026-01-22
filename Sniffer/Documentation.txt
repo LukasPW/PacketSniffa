@@ -1,0 +1,153 @@
+TCP FLAGS – DIAGNOSTIC REFERENCE
+(Project Documentation Copy)
+
+SECTION 1: WHAT THIS SNIFFER ACTUALLY SEES
+
+This program observes metadata only from network traffic.
+It does NOT inspect payloads, URLs, page contents, or user data.
+
+Captured fields typically include:
+
+Source IP / Destination IP
+
+Destination hostname (when DNS is visible)
+
+TCP flags
+
+Port numbers
+
+Timestamp
+
+Important limitation:
+
+HTTPS encrypts application data
+
+Websites like YouTube, Google, etc. appear as backend services,
+CDNs, or load balancers rather than human-readable site names
+
+Example:
+DEST=minesweeperonline.com
+
+DNS resolution succeeded
+
+The hostname was visible before encryption
+
+No page content or URL path is known
+
+Example:
+DEST=onedscolprdneu14.northeurope.cloudapp.azure.com
+
+Azure cloud backend
+
+Likely a Microsoft service endpoint
+
+The real application (e.g. OneDrive, telemetry, auth) cannot be
+determined from TCP metadata alone
+
+SECTION 2: HOW TO READ OUR LOG FLAGS
+
+The FLAGS field describes the state of the TCP connection.
+
+FLAGS=S
+
+Connection attempt started
+
+Client is asking: “Can I connect?”
+
+FLAGS=SA
+
+Server replied: “Yes, I’m here”
+
+FLAGS=A
+
+Connection is established
+
+Data is acknowledged
+
+FLAGS=PA
+
+Encrypted application data is flowing
+
+Normal during page loads
+
+FLAGS=FA
+
+Connection closed cleanly
+
+Page or request finished successfully
+
+FLAGS=R or RA
+
+Connection rejected or forcefully closed
+
+Often indicates blocked ports or denied services
+
+Important:
+
+Seeing FLAGS=S without follow-up often means:
+
+Firewall blocking
+
+Service not listening
+
+Packet dropped
+
+SECTION 3: WHY SOME SITES ARE NOT IDENTIFIED
+
+Modern web traffic uses:
+
+HTTPS
+
+CDNs (Content Delivery Networks)
+
+Load balancers
+
+Shared cloud infrastructure
+
+Because of this:
+
+A single website may contact dozens of backend servers
+
+Hostnames may belong to cloud providers, not the site itself
+
+URL paths are encrypted and never visible
+
+This is expected behavior and not a flaw in the program.
+
+SECTION 4: ETHICAL DESIGN DECISIONS
+
+This project intentionally limits visibility to:
+
+Connection existence
+
+Network health
+
+Diagnostic behavior
+
+It avoids:
+
+URL paths
+
+Query strings
+
+User identifiers
+
+Content inspection
+
+Reason:
+
+Even partial URL tracking can expose private user behavior
+
+Metadata-only logging is sufficient for diagnostics
+
+Aligns with privacy-respecting network analysis practices
+
+SECTION 5: REPORT APPENDIX (SHORT VERSION)
+
+Appendix: TCP Flag Logging
+
+The program logs TCP flags to diagnose connection behavior without
+inspecting encrypted traffic. TCP flags indicate how connections are
+established, maintained, and closed. This allows analysis of network
+health and connectivity while preserving user privacy, as no payload
+data or URLs are captured.

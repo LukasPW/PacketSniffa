@@ -1,0 +1,54 @@
+Network Sniffer – Security & Diagnostic Features
+
+Overview
+--------
+This tool is a passive network packet sniffer designed for educational
+diagnostics and security observation. It analyzes packet metadata only
+and does not inspect payload contents or decrypt traffic.
+
+Privacy & Ethics
+----------------
+- No payload inspection
+- No URL paths or content
+- No user identification
+- No traffic decryption
+- Session-based logging only
+
+Security-Oriented Features
+--------------------------
+1. Traffic Rate Monitoring
+   Detects unusually high packet rates from a single IP,
+   which may indicate misconfiguration, malware beaconing,
+   or denial-of-service behavior.
+
+2. SYN-Heavy Detection
+   Identifies excessive TCP SYN packets without matching FIN packets,
+   indicating scan-like or incomplete connection behavior.
+
+3. Short-Lived Connection Churn
+   Flags hosts that rapidly open and close many TCP connections,
+   a common symptom of aggressive polling or faulty applications.
+
+4. Protocol Awareness
+   Labels likely QUIC traffic (UDP/443) and tracks protocol distribution
+   to highlight unexpected protocol usage.
+
+5. Destination Awareness
+   Resolves destination IPs to hostnames using observed DNS responses.
+   This reflects backend infrastructure rather than website branding.
+
+End-of-Session Security Summary
+-------------------------------
+At shutdown, the tool prints a summary of observed anomalies using
+neutral diagnostic language (e.g., "scan-like behavior observed").
+
+Limitations
+-----------
+This tool does not:
+- Detect malware definitively
+- Inspect encrypted traffic
+- Track browsing activity
+- Perform intrusion prevention
+
+The sniffer is intended for diagnostics, learning, and ethical network
+analysis only.
