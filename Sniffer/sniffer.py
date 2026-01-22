@@ -15,11 +15,11 @@ CSV_FILE = "packet_log.csv"
 INTERFACE = None
 CAPTURE_FILTER = "ip"
 
-# Security thresholds (tunable)
-RATE_WINDOW = 10                 # seconds
-RATE_THRESHOLD = 300             # packets per window
-SYN_THRESHOLD = 100              # SYN packets without FIN
-SHORT_CONN_THRESHOLD = 150       # high churn indicator
+# Security thresholds
+RATE_WINDOW = 10
+RATE_THRESHOLD = 300
+SYN_THRESHOLD = 100
+SHORT_CONN_THRESHOLD = 150
 
 # -----------------------------
 # GLOBAL STATS
@@ -30,7 +30,7 @@ host_traffic = Counter()
 dns_cache = {}
 
 # Security tracking
-packet_rate = defaultdict(list)     # IP -> timestamps
+packet_rate = defaultdict(list)
 syn_counter = Counter()
 fin_counter = Counter()
 security_warnings = set()
@@ -45,7 +45,7 @@ def init_text_log():
 init_text_log()
 
 # -----------------------------
-# CSV FILE (HEADERS)
+# CSV FILE
 # -----------------------------
 with open(CSV_FILE, "w", newline="") as f:
     writer = csv.writer(f)
@@ -83,6 +83,24 @@ def resolve_destination(ip):
         return ip
 
 # -----------------------------
+# DESTINATION LABELING
+# -----------------------------
+def classify_destination_with_comment(ip):
+    """
+    Returns the original IP (or resolved hostname) with a comment
+    for multicast, broadcast, or private LAN IPs.
+    """
+    comment = ""
+    if ip.startswith("239."):
+        comment = " (MULTICAST: local service discovery)"
+    elif ip == "255.255.255.255":
+        comment = " (BROADCAST)"
+    elif ip.startswith("10.") or ip.startswith("172.16.") or ip.startswith("192.168."):
+        comment = " (PRIVATE LAN)"
+    resolved = resolve_destination(ip)
+    return f"{resolved}{comment}"
+
+# -----------------------------
 # QUIC DETECTION
 # -----------------------------
 def is_quic(packet):
@@ -94,11 +112,7 @@ def is_quic(packet):
 def analyze_security(packet, src_ip):
     now = time.time()
     packet_rate[src_ip].append(now)
-
-    # Sliding window cleanup
-    packet_rate[src_ip] = [
-        t for t in packet_rate[src_ip] if now - t <= RATE_WINDOW
-    ]
+    packet_rate[src_ip] = [t for t in packet_rate[src_ip] if now - t <= RATE_WINDOW]
 
     if len(packet_rate[src_ip]) > RATE_THRESHOLD:
         security_warnings.add(
@@ -140,7 +154,7 @@ def packet_handler(packet):
     handle_dns(packet)
     analyze_security(packet, src_ip)
 
-    destination = resolve_destination(dst_ip)
+    destination = classify_destination_with_comment(dst_ip)
 
     protocol = "OTHER"
     src_port = ""
@@ -178,9 +192,9 @@ def print_host_graph():
     print("\nPer-Host Traffic Graph")
     print("======================")
     for host, count in host_traffic.most_common(10):
-        name = resolve_destination(host)
+        name = classify_destination_with_comment(host)
         bar = "#" * min(count // 5, 50)
-        print(f"{name:<40} | {bar} ({count})")
+        print(f"{name:<60} | {bar} ({count})")
 
 # -----------------------------
 # SUMMARY
@@ -221,5 +235,5 @@ except KeyboardInterrupt:
     csvfile.close()
     sys.exit(0)
 
-# open terminal as admin and run : python sniffer.py
+# open terminal as admin and run : python Sniffer/sniffer.py
 # to check if it works run: scapy, in terminal
