@@ -55,7 +55,7 @@ pip install scapy
 - Run the sniffer:
 
 ```bash
-python sniffer.py
+python Sniffer/sniffer.py
 ```
 
 ## Observe live logs in the terminal
