@@ -63,12 +63,8 @@ print(classification_report(y_test, y_pred))
 # -----------------------------
 # Save model
 # -----------------------------
-joblib.dump({
-    "model": clf,
-    "country_map": country_map,
-    "protocol_name_map": protocol_name_map,
-    "features": features
-}, MODEL_FILE)
+joblib.dump(clf, "decision_tree_model.pkl")
+
 
 print(f"Model saved to {MODEL_FILE}")
 print(df["suspicious"].value_counts())

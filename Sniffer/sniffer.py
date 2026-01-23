@@ -38,9 +38,36 @@ ALERT_COOLDOWN = 30
 INITIAL_QUEUE = 5000
 MAX_QUEUE = 50000
 
+TRUSTED_ASNS = {
+    3301,   # Telia
+    1257,   # Tele2
+    13335,  # Cloudflare
+    16509,  # AWS
+}
+ASN_SERVICE_MAP = {
+    # Swedish ISPs
+    3301: "TELIA_ISP",
+    1257: "TELE2_ISP",
+    2119: "TELENOR_ISP",
+
+    # Global infra
+    13335: "CLOUDFLARE",
+    16509: "AWS",
+    15169: "GOOGLE",
+    8075:  "MICROSOFT",
+    32934: "FACEBOOK_META",
+    2906:  "NETFLIX",
+
+    # CDNs
+    54113: "FASTLY",
+    20940: "AKAMAI",
+}
+
 # ============================================================
 # GLOBALS
 # ============================================================
+
+country_num_map = defaultdict(lambda: len(country_num_map) + 1)
 
 packet_queue = queue.Queue(maxsize=INITIAL_QUEUE)
 queue_lock = threading.Lock()
@@ -54,14 +81,29 @@ port_counter = defaultdict(set)
 
 alert_last_fired = {}
 
-# Seen sets (one-time prints)
 seen_countries = set()
 seen_services = set()
 
-# Load ML model
-clf = joblib.load(ML_MODEL_FILE)
+# ============================================================
+# LOAD ML MODEL (FIXED)
+# ============================================================
 
-# GeoIP readers
+_raw_model = joblib.load(ML_MODEL_FILE)
+
+if isinstance(_raw_model, dict):
+    if "model" not in _raw_model:
+        raise RuntimeError("ML model file is a dict but missing key 'model'")
+    clf = _raw_model["model"]
+else:
+    clf = _raw_model
+
+if not hasattr(clf, "predict"):
+    raise RuntimeError("Loaded ML object has no predict() method")
+
+# ============================================================
+# GEOIP
+# ============================================================
+
 geo_country = geoip2.database.Reader(GEOIP_COUNTRY_DB)
 geo_asn = geoip2.database.Reader(GEOIP_ASN_DB)
 
@@ -85,18 +127,6 @@ def now():
 def is_private_ip(ip):
     return ip.startswith(("10.", "172.16.", "192.168."))
 
-def alert(src_ip, alert_type, value):
-    key = (src_ip, alert_type)
-    last = alert_last_fired.get(key, 0)
-
-    if now() - last < ALERT_COOLDOWN:
-        return
-
-    alert_last_fired[key] = now()
-    ts = datetime.now().isoformat()
-    print(f"[ALERT] {ts} {src_ip} {alert_type} {value}")
-    alert_writer.writerow([ts, src_ip, alert_type, value])
-
 def resolve_dns(ip):
     if ip in dns_cache:
         return dns_cache[ip]
@@ -107,45 +137,75 @@ def resolve_dns(ip):
     return dns_cache[ip]
 
 # ============================================================
-# GEOIP
+# ALERTS (UPDATED)
+# ============================================================
+
+def alert(src_ip, alert_type, value, service=None, org=None):
+    """
+    Fires an alert if cooldown passed. Includes optional service/org info.
+    """
+    key = (src_ip, alert_type)
+    last = alert_last_fired.get(key, 0)
+
+    if now() - last < ALERT_COOLDOWN:
+        return
+
+    alert_last_fired[key] = now()
+    ts = datetime.now().isoformat()
+
+    info_str = ""
+    if org or service:
+        info_str = f"{org or 'UNKNOWN_ORG'} / {service or 'UNKNOWN_SERVICE'}"
+
+    print(f"[ALERT] {ts} {src_ip} {alert_type} {value} {info_str}")
+    alert_writer.writerow([ts, src_ip, alert_type, value, org, service])
+
+# ============================================================
+# GEOIP LOOKUP
 # ============================================================
 
 def geoip_lookup(ip):
     if is_private_ip(ip):
-        return "PRIVATE", 0
+        return "PRIVATE", 0, "PRIVATE"
 
     try:
         country = geo_country.country(ip)
-        code = country.country.iso_code or "UNK"
+        country_code = country.country.iso_code or "UNK"
     except:
-        code = "UNK"
+        country_code = "UNK"
 
     try:
-        asn = geo_asn.asn(ip).autonomous_system_number or 0
+        asn_resp = geo_asn.asn(ip)
+        asn = asn_resp.autonomous_system_number or 0
+        org = asn_resp.autonomous_system_organization or "UNKNOWN_ORG"
     except:
         asn = 0
+        org = "UNKNOWN_ORG"
 
-    if code not in seen_countries:
-        seen_countries.add(code)
-        print(f"[INFO] New country detected: {code} ({asn})")
+    if country_code not in seen_countries:
+        seen_countries.add(country_code)
+        print(f"[INFO] New country detected: {country_code} ({asn})")
 
-    return code, asn
+    return country_code, asn, org
 
 # ============================================================
-# SERVICE / APP INFERENCE
+# SERVICE INFERENCE
 # ============================================================
 
-def infer_service(packet):
-    service = "UNKNOWN"
+def infer_service(packet, asn):
+    # ASN-based inference (strongest signal)
+    if asn in ASN_SERVICE_MAP:
+        service = ASN_SERVICE_MAP[asn]
+    else:
+        service = "UNKNOWN"
 
+    # Protocol refinement (weak but useful)
     if DNS in packet:
-        service = "DNS"
-    elif TCP in packet:
-        if packet[TCP].dport == 443 or packet[TCP].sport == 443:
-            service = "HTTPS"
-    elif UDP in packet:
-        if packet[UDP].dport == 443 or packet[UDP].sport == 443:
-            service = "QUIC_FLOW"
+        service += "_DNS"
+    elif TCP in packet and (packet[TCP].dport == 443 or packet[TCP].sport == 443):
+        service += "_HTTPS"
+    elif UDP in packet and (packet[UDP].dport == 443 or packet[UDP].sport == 443):
+        service += "_QUIC"
 
     if service not in seen_services:
         seen_services.add(service)
@@ -153,11 +213,12 @@ def infer_service(packet):
 
     return service
 
+
 # ============================================================
-# RULE-BASED SECURITY ANALYSIS
+# RULE-BASED IDS
 # ============================================================
 
-def analyze_rules(packet, src_ip, dst_port):
+def analyze_rules(packet, src_ip, dst_port, src_asn, org=None, service=None):
     if is_private_ip(src_ip):
         return
 
@@ -168,35 +229,41 @@ def analyze_rules(packet, src_ip, dst_port):
     pr.append(t)
     while pr and t - pr[0] > RATE_WINDOW:
         pr.popleft()
-
     if len(pr) > RATE_THRESHOLD:
-        alert(src_ip, "HIGH_PACKET_RATE", len(pr))
+        alert(src_ip, "HIGH_PACKET_RATE", len(pr), service=service, org=org)
 
     # TCP analysis
     if TCP in packet:
         flags = packet[TCP].flags
 
-        if flags & 0x02:  # SYN
+        # SYN flood
+        if flags & 0x02:
             sc = syn_counter[src_ip]
             sc.append(t)
             while sc and t - sc[0] > RATE_WINDOW:
                 sc.popleft()
-
             if len(sc) > SYN_THRESHOLD:
-                alert(src_ip, "SYN_FLOOD", len(sc))
+                alert(src_ip, "SYN_FLOOD", len(sc), service=service, org=org)
 
-            pc = port_counter[src_ip]
-            pc.add(dst_port)
+        # Port scan
+        pc = port_counter[src_ip]
+        pc.add(dst_port)
+        if len(pc) > PORTSCAN_PORTS:
+            alert(src_ip, "PORT_SCAN", len(pc), service=service, org=org)
 
-            if len(pc) > PORTSCAN_PORTS:
-                alert(src_ip, "PORT_SCAN", len(pc))
 
 # ============================================================
-# ML FEATURE EXTRACTION
+# ML FEATURES
 # ============================================================
 
-def extract_ml_features(packet):
+def extract_ml_features(packet, src_ip, country_code, asn):
     features = {
+        # REQUIRED BY MODEL
+        "protocol_name_num": 0,
+        "src_asn": int(asn),
+        "src_country_num": country_num_map[country_code],
+
+        # EXISTING
         "protocol": 0,
         "src_port": 0,
         "dst_port": 0,
@@ -215,17 +282,23 @@ def extract_ml_features(packet):
 
     if TCP in packet:
         features["protocol"] = 6
+        features["protocol_name_num"] = 6
         features["src_port"] = packet[TCP].sport
         features["dst_port"] = packet[TCP].dport
         features["tcp_flags"] = int(packet[TCP].flags)
+
     elif UDP in packet:
         features["protocol"] = 17
+        features["protocol_name_num"] = 17
         features["src_port"] = packet[UDP].sport
         features["dst_port"] = packet[UDP].dport
+
     elif ICMP in packet:
         features["protocol"] = 1
+        features["protocol_name_num"] = 1
 
     return features
+
 
 # ============================================================
 # PACKET WORKER
@@ -262,19 +335,24 @@ def packet_worker():
 
         resolve_dns(dst_ip)
 
-        # Rule-based IDS
-        analyze_rules(packet, src_ip, dst_port)
+        # GeoIP lookup
+        country, asn, org = geoip_lookup(src_ip)
 
-        # GeoIP + service
-        country, asn = geoip_lookup(src_ip)
-        service = infer_service(packet)
+        # Service inference
+        service = infer_service(packet, asn)
 
-        # ML inference
-        features = extract_ml_features(packet)
+        # Rule-based IDS with service/org info for alerts
+        analyze_rules(packet, src_ip, dst_port, asn, service, org)
+
+        # ML features
+        features = extract_ml_features(packet, src_ip, country, asn)
         df_feat = pd.DataFrame([features])
+
+        # Align to training schema
+        df_feat = df_feat.reindex(columns=clf.feature_names_in_, fill_value=0)
         ml_suspicious = int(clf.predict(df_feat)[0])
 
-        # CSV write
+        # CSV logging
         packet_writer.writerow([
             ts,
             features["protocol"],
@@ -289,6 +367,7 @@ def packet_worker():
             ml_suspicious,
             country,
             asn,
+            org,
             service
         ])
 
@@ -303,6 +382,7 @@ def packet_worker():
             elif qsize < dynamic_queue_max * 0.2:
                 dynamic_queue_max = max(dynamic_queue_max // 2, INITIAL_QUEUE)
                 packet_queue.maxsize = dynamic_queue_max
+
 
 # ============================================================
 # SNIFF LOOP
@@ -339,3 +419,4 @@ except KeyboardInterrupt:
     alert_csv.close()
     geo_country.close()
     geo_asn.close()
+    
