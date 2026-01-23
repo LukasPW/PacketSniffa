@@ -1,120 +1,141 @@
-# Network Packet Sniffer (Educational & Diagnostic)
+# 🛡️ Network Packet Sniffer & IDS (Python)
 
-## Overview
+![Python Version](https://img.shields.io/badge/python-3.8+-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-This project is a **Python-based network packet sniffer** designed for:
+---
+
+## 🌐 Overview
+
+This project is a **Python-based network packet sniffer and lightweight IDS** for:
 
 - Network diagnostics
-- Educational exploration of TCP/IP, UDP, ICMP, and QUIC
-- Passive security observation
+- Security anomaly detection
+- Educational exploration of TCP/IP, UDP, ICMP, and QUIC traffic
 
-It **only inspects metadata**, not packet contents, ensuring ethical usage.
-
----
-
-## Features
-
-1. **Session-based logging**
-   - Logs reset each run
-   - Saves to text (`packet_log.txt`) and CSV (`packet_log.csv`)
-2. **Protocol detection**
-   - TCP, UDP, ICMP, QUIC (likely)
-3. **Destination labeling**
-   - Multicast, Broadcast, Private LAN
-   - DNS hostname resolution when available
-4. **Security monitoring**
-   - High traffic rate detection
-   - SYN-heavy scan-like behavior
-   - Short-lived connection churn detection
-5. **Per-host traffic visualization**
-   - Simple text-based bar graph
-6. **CSV export**
-   - Easy to analyze with Excel, Google Sheets, etc.
+It **only inspects metadata**, not packet payloads, so it’s ethical for testing on networks you own or are authorized to monitor.
 
 ---
 
-## Requirements
+## ⚠️ Disclaimer
+
+## Intended for educational and diagnostic use **only** on networks you own or are authorized to test. Unauthorized sniffing is illegal.
+
+---
+
+## ⚡ Features
+
+| Feature                        | Description                                                      |
+| ------------------------------ | ---------------------------------------------------------------- |
+| **Packet Logging**             | Logs metadata to CSV (`packet_log.csv`) & alerts to `alerts.csv` |
+| **Protocol Detection**         | TCP, UDP, ICMP, DNS, HTTPS, QUIC (inferred)                      |
+| **Destination Labeling**       | Private, multicast, broadcast IPs; DNS resolution caching        |
+| **GeoIP & ASN Mapping**        | Maps IPs to country codes and organizations                      |
+| **Service Inference**          | Infers service type from protocol/port (e.g., Cloudflare, AWS)   |
+| **Rule-Based IDS**             | Detects high packet rate, SYN floods, port scans                 |
+| **ML-Based Anomaly Detection** | Uses decision tree model to flag suspicious hosts                |
+| **Dynamic Queue Handling**     | Auto-adjusts capture queue to prevent packet loss                |
+| **CSV Export**                 | Ready for Excel, Google Sheets, or analysis                      |
+
+---
+
+## 🛠️ Requirements
 
 - Python 3.8+
 - [Scapy](https://scapy.net/)
-- **Npcap** (for Windows) or equivalent packet capture library for your system
+- [GeoIP2](https://pypi.org/project/geoip2/)
+- [pandas](https://pandas.pydata.org/)
+- [joblib](https://joblib.readthedocs.io/)
+- GeoLite2 databases: **Country** & **ASN**
+- **Npcap** (Windows) or libpcap equivalent (Linux/macOS)
 
-Install Scapy via pip:
-
-```bash
-pip install scapy
-```
-
-> **Note:** On Windows, make sure to install Npcap to allow Scapy to capture packets. Choose the default installation options and enable "WinPcap Compatible Mode" if prompted.  
-> On Linux/macOS, ensure you have `libpcap` installed (usually included by default) and run the sniffer with root privileges.
-
-## Running the Sniffer
-
-- Open a terminal with administrator/root privileges
-- Navigate to the project folder
-- Run the sniffer:
+Install Python dependencies:
 
 ```bash
-python Sniffer/sniffer.py
+pip install scapy geoip2 pandas joblib
 ```
 
-## Observe live logs in the terminal
-
-Logs are saved in:
-
-- `packet_log.txt` (text log)
-- `packet_log.csv` (CSV log)
-
-Press `CTRL+C` to stop and see the summary, including:
-
-- Total packets per protocol
-- Top hosts
-- Security observations
+Note: On Windows, install Npcap. Enable "WinPcap Compatible Mode" if prompted.  
+On Linux/macOS, ensure libpcap is installed and run as root.
 
 ---
 
-## Security & Privacy Notes
+## 🚀 Running the Sniffer/IDS
 
-- The sniffer does not inspect payloads (no URL paths, message contents, or user data)
-- Only uses metadata for:
-  - Traffic statistics
-  - Security anomaly detection
-- Multicast, broadcast, and private LAN traffic is labeled rather than removed
-- QUIC traffic is labeled “QUIC (likely)” since headers are encrypted
-- Designed for local/test networks only, not public networks
-
----
-
-## Git Ignore Instructions
-
-To prevent log files from being committed:
-
-1. Create or edit a `.gitignore` file in your repository root
-2. Add the following lines:
-
-- `packet_log.txt`
-- `packet_log.csv`
-
-3. If these files were already tracked, remove them from Git:
+1. Open terminal as administrator/root
+2. Navigate to project folder
+3. Run:
 
 ```bash
-git rm --cached packet_log.txt packet_log.csv
-git commit -m "Stop tracking log files"
+python sniffer.py
 ```
 
-After this, Git will ignore them automatically.
+Packets are processed in real-time. Logs and alerts are saved to:
+
+- `packet_log.csv` – metadata + ML flags
+- `alerts.csv` – triggered security alerts
+
+Press `CTRL+C` to stop. Program closes files & threads safely.
 
 ---
 
-## Learning Goals
+## 🔎 Security & Privacy Notes
+
+- No payload inspection (no URLs, messages, or user data)
+- Metadata only: IPs, ports, protocols, packet length, TCP flags
+- Labels private, multicast, and broadcast traffic
+- Designed for **local/test networks only**
+
+---
+
+## 📝 Git Ignore Instructions
+
+Add to `.gitignore` to avoid committing logs:
+
+```
+packet_log.csv
+alerts.csv
+```
+
+If already tracked:
+
+```bash
+git rm --cached packet_log.csv alerts.csv
+git commit -m "Ignore log files"
+```
+
+---
+
+## 🎯 Learning Goals
 
 - Understand network protocols (TCP, UDP, ICMP, QUIC)
-- Observe and visualize traffic per host
-- Identify simple anomalous behaviors (rate spikes, SYN-heavy patterns, short-lived connections)
-- Explore DNS resolution and local network traffic labeling
+- Explore DNS resolution, GeoIP, ASN mapping
+- Detect anomalies via rule-based and ML methods
+- Analyze traffic per host and per service
 
 ---
 
-## Disclaimer
+## ⚠️ IDS Thresholds & Rules
 
-This tool is intended strictly for educational and diagnostic use on networks you own or are authorized to test. Unauthorized sniffing on public or private networks may be illegal.
+| Alert Type       | Condition / Threshold             | Notes                                |
+| ---------------- | --------------------------------- | ------------------------------------ |
+| High Packet Rate | > 3000 packets in 10 seconds      | Detects abnormal traffic spikes      |
+| SYN Flood        | > 200 SYN packets in 10 seconds   | TCP flood detection                  |
+| Port Scan        | > 100 unique destination ports    | Detects horizontal scanning          |
+| Alert Cooldown   | 30 seconds between same alert     | Prevents alert spam                  |
+| Queue Size       | Initial: 5000 packets, Max: 50000 | Dynamically adjusts based on traffic |
+| Trusted ASNs     | 3301, 1257, 13335, 16509          | Alerts may ignore trusted networks   |
+
+---
+
+## 🛠️ Quick Legend
+
+| Symbol / Label | Meaning                                    |
+| -------------- | ------------------------------------------ |
+| `PRIVATE`      | Local/private IP                           |
+| `UNK`          | Unknown public IP                          |
+| `ISO2`         | Country code (SE=Sweden, US=United States) |
+| `UNKNOWN`      | Service not identified                     |
+| `_DNS`         | DNS traffic inferred                       |
+| `_HTTPS`       | HTTPS traffic inferred                     |
+| `_QUIC`        | QUIC traffic inferred                      |
