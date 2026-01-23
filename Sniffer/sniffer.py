@@ -1,56 +1,69 @@
 import threading
 import queue
 from scapy.all import sniff, IP, TCP, UDP, ICMP, DNS
+from scapy.layers.tls.all import TLS, TLSClientHello
 from datetime import datetime
 import socket
 import csv
 import time
-from collections import Counter, defaultdict, deque
+from collections import defaultdict, deque
+from geoip2.database import Reader
 
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-CSV_FILE = "packet_log.csv"         # main packet log
-ALERT_FILE = "alerts.csv"           # IDS alert log
-INTERFACE = None                     # sniffing interface (None = default)
-CAPTURE_FILTER = "ip"                # BPF filter
+CSV_FILE = "packet_log.csv"
+ALERT_FILE = "alerts.csv"
+INTERFACE = None
+CAPTURE_FILTER = "ip"
 
 # Detection windows
-RATE_WINDOW = 10                     # seconds for high-rate detection
-PORTSCAN_WINDOW = 10                 # seconds for port scan detection
-SHORT_CONN_WINDOW = 60               # seconds for short-lived TCP detection
+RATE_WINDOW = 10
+PORTSCAN_WINDOW = 10
+SHORT_CONN_WINDOW = 60
 
 # Thresholds
-RATE_THRESHOLD = 3000                # packets in RATE_WINDOW to trigger alert
-SYN_THRESHOLD = 200                  # SYN packets in RATE_WINDOW to trigger SYN flood alert
-PORTSCAN_PORTS = 100                 # unique dst ports to trigger port scan
-SHORT_CONN_THRESHOLD = 50            # number of short-lived TCP connections per IP
-HALF_OPEN_RATIO_THRESHOLD = 2        # SYN/FIN ratio for half-open alert
+RATE_THRESHOLD = 3000
+SYN_THRESHOLD = 200
+PORTSCAN_PORTS = 100
+SHORT_CONN_THRESHOLD = 50
+HALF_OPEN_RATIO_THRESHOLD = 2
 
-# Alert system
-ALERT_COOLDOWN = 30                  # seconds before repeated alert for same IP/type
+# Alert cooldown
+ALERT_COOLDOWN = 30
 
 # Queue
-INITIAL_QUEUE = 5000                 # starting queue size
-MAX_QUEUE = 50000                     # max queue size under load
+INITIAL_QUEUE = 5000
+MAX_QUEUE = 50000
+
+# GeoIP database paths
+GEOASN_DB = r"databases\GeoLite2-ASN_20260123\GeoLite2-ASN.mmdb"
+GEOCOUNTRY_DB = r"databases\GeoLite2-Country_20260120\GeoLite2-Country.mmdb"
+
+# Whitelist safe IPs / ASNs (like ISP backbones)
+WHITELIST_IPS = {"81.227.188.63"}  # example Telia IP
+WHITELIST_ASNS = {1299}             # Telia ASN
 
 # -----------------------------
 # GLOBALS
 # -----------------------------
 packet_queue = queue.Queue(maxsize=INITIAL_QUEUE)
 
-# DNS cache for host resolution
+# DNS caching
 dns_cache = {}
 
-# Tier-1 data structures
-packet_rate = defaultdict(deque)     # track packet timestamps per src_ip
-syn_counter = defaultdict(deque)     # track SYN timestamps per src_ip
-port_counter = defaultdict(set)      # track unique dst ports per src_ip
-alert_last_fired = {}                # track last alert timestamp per (src_ip, alert_type)
+# Tier-1
+packet_rate = defaultdict(deque)
+syn_counter = defaultdict(deque)
+port_counter = defaultdict(set)
+alert_last_fired = {}
 
-# Tier-2 TCP tracking
-tcp_connections = {}                 # key=(src_ip,dst_ip,dst_port), value=dict(syn, fin, start_time, state, last_seen)
-short_conn_history = defaultdict(deque)  # track recent short-lived connections per src_ip
+# Tier-2
+tcp_connections = {}
+short_conn_history = defaultdict(deque)
+
+# GeoIP caching
+geoip_cache = {}
 
 # Queue management
 queue_lock = threading.Lock()
@@ -62,43 +75,43 @@ dynamic_queue_max = INITIAL_QUEUE
 packet_csv = open(CSV_FILE, "w", newline="")
 packet_writer = csv.writer(packet_csv)
 packet_writer.writerow([
-    "timestamp", "protocol", "src_ip", "dst_ip", "src_port", "dst_port",
-    "packet_len", "tcp_flags", "is_private_dst", "is_multicast_dst", "suspicious"
+    "timestamp","protocol","src_ip","dst_ip","src_port","dst_port",
+    "packet_len","tcp_flags","is_private_dst","is_multicast_dst",
+    "suspicious","src_country","src_asn","src_sni"
 ])
 
 alert_csv = open(ALERT_FILE, "w", newline="")
 alert_writer = csv.writer(alert_csv)
-alert_writer.writerow(["timestamp", "src_ip", "alert_type", "value"])
+alert_writer.writerow(["timestamp","src_ip","alert_type","value"])
+
+# -----------------------------
+# GEOIP READERS
+# -----------------------------
+geo_reader_asn = Reader(GEOASN_DB)
+geo_reader_country = Reader(GEOCOUNTRY_DB)
 
 # -----------------------------
 # HELPERS
 # -----------------------------
 def now():
-    """Return current epoch time."""
     return time.time()
 
-def alert(src_ip, alert_type, value):
-    """
-    Fire an alert if cooldown expired.
-    Logs to console and CSV.
-    """
-    key = (src_ip, alert_type)
-    last = alert_last_fired.get(key, 0)
-
-    if now() - last < ALERT_COOLDOWN:
-        return False
-
-    alert_last_fired[key] = now()
-    ts = datetime.now().isoformat()
-
-    print(f"[ALERT] {ts} {src_ip} {alert_type} {value}")
-    alert_writer.writerow([ts, src_ip, alert_type, value])
-    return True
+def enrich_geoip(ip):
+    """Return (country, ASN) tuple for source IP."""
+    if ip in geoip_cache:
+        return geoip_cache[ip]
+    try:
+        country = geo_reader_country.country(ip).country.iso_code
+    except:
+        country = "UNK"
+    try:
+        asn = geo_reader_asn.asn(ip).autonomous_system_number
+    except:
+        asn = 0
+    geoip_cache[ip] = (country, asn)
+    return country, asn
 
 def resolve_dns(ip):
-    """
-    Resolve IP to hostname and cache.
-    """
     if ip in dns_cache:
         return
     try:
@@ -106,24 +119,51 @@ def resolve_dns(ip):
     except:
         dns_cache[ip] = ip
 
+def is_whitelisted(src_ip):
+    """Return True if IP or ASN is whitelisted."""
+    if src_ip in WHITELIST_IPS:
+        return True
+    _, asn = enrich_geoip(src_ip)
+    if asn in WHITELIST_ASNS:
+        return True
+    return False
+
+def alert(src_ip, alert_type, value):
+    """Fire alert unless IP is whitelisted."""
+    if is_whitelisted(src_ip):
+        return False
+    key = (src_ip, alert_type)
+    last = alert_last_fired.get(key, 0)
+    if now() - last < ALERT_COOLDOWN:
+        return False
+    alert_last_fired[key] = now()
+    ts = datetime.now().isoformat()
+    print(f"[ALERT] {ts} {src_ip} {alert_type} {value}")
+    alert_writer.writerow([ts, src_ip, alert_type, value])
+    return True
+
+def extract_sni(packet):
+    """Extract TLS SNI if present."""
+    try:
+        if TCP in packet and packet[TCP].dport == 443 and packet.haslayer(TLSClientHello):
+            ext = packet[TLSClientHello].extensions
+            if ext and ext[0].server_name:
+                return ext[0].server_name.decode(errors="ignore")
+    except:
+        pass
+    return ""
+
 # -----------------------------
 # ANALYSIS FUNCTION (Tier1 + Tier2)
 # -----------------------------
 def analyze(packet, src_ip, dst_ip, dst_port):
-    """
-    Analyze a packet for:
-      - Tier1: high packet rate, SYN flood, port scan
-      - Tier2: TCP lifecycle, short-lived connections, half-open detection
-    """
-    # skip LAN/internal traffic to reduce false positives
-    if src_ip.startswith(("10.", "172.16.", "192.168.")):
+    # skip whitelisted/internal
+    if src_ip.startswith(("10.", "172.16.", "192.168.")) or is_whitelisted(src_ip):
         return
 
     t = now()
 
-    # -----------------------------
-    # Tier1: Packet rate
-    # -----------------------------
+    # Tier1: packet rate
     pr = packet_rate[src_ip]
     pr.append(t)
     while pr and t - pr[0] > RATE_WINDOW:
@@ -131,13 +171,9 @@ def analyze(packet, src_ip, dst_ip, dst_port):
     if len(pr) > RATE_THRESHOLD:
         alert(src_ip, "HIGH_PACKET_RATE", len(pr))
 
-    # -----------------------------
-    # Tier1: TCP SYN flood / port scan
-    # -----------------------------
+    # Tier1: SYN flood / port scan
     if TCP in packet:
         flags = packet[TCP].flags
-
-        # track SYN flood
         if flags & 0x02:  # SYN
             sc = syn_counter[src_ip]
             sc.append(t)
@@ -146,85 +182,68 @@ def analyze(packet, src_ip, dst_ip, dst_port):
             if len(sc) > SYN_THRESHOLD:
                 alert(src_ip, "SYN_FLOOD", len(sc))
 
-            # port scan detection
             pc = port_counter[src_ip]
             pc.add(dst_port)
             if len(pc) > PORTSCAN_PORTS:
                 alert(src_ip, "PORT_SCAN", len(pc))
 
-    # -----------------------------
-    # Tier2: TCP connection tracking
-    # -----------------------------
+    # Tier2: TCP lifecycle tracking
     if TCP in packet:
         key = (src_ip, dst_ip, dst_port)
-        conn = tcp_connections.get(key, {
-            "syn":0, "fin":0, "start_time":t, "state":"CLOSED", "last_seen":t
-        })
+        conn = tcp_connections.get(key, {"syn":0,"fin":0,"start_time":t,"state":"CLOSED","last_seen":t})
         flags = packet[TCP].flags
 
-        # SYN packet -> start connection
+        # SYN -> start connection
         if flags & 0x02:
             conn["syn"] += 1
             conn["state"] = "SYN_SENT"
             conn["last_seen"] = t
 
-        # FIN packet -> close connection
+        # FIN -> close connection
         if flags & 0x01:
             conn["fin"] += 1
             conn["state"] = "CLOSED"
             conn["last_seen"] = t
             duration = t - conn.get("start_time", t)
-            short_conn_history[src_ip].append((t, duration))
+            short_conn_history[src_ip].append((t,duration))
 
-        # RST packet -> abrupt close
+        # RST -> abrupt close
         if flags & 0x04:
             conn["state"] = "CLOSED"
             conn["last_seen"] = t
             duration = t - conn.get("start_time", t)
-            short_conn_history[src_ip].append((t, duration))
+            short_conn_history[src_ip].append((t,duration))
 
-        # save connection
         tcp_connections[key] = conn
 
-        # -----------------------------
-        # Tier2: Short-lived connection alert
-        # -----------------------------
+        # short-lived TCP alert
         sh = short_conn_history[src_ip]
-        # cleanup old entries
         while sh and t - sh[0][0] > SHORT_CONN_WINDOW:
             sh.popleft()
         if len(sh) > SHORT_CONN_THRESHOLD:
             alert(src_ip, "SHORT_LIVED_TCP", len(sh))
 
-        # half-open SYN-heavy detection
+        # half-open detection
         if conn["fin"] > 0:
-            syn_fin_ratio = conn["syn"] / conn["fin"]
-            if syn_fin_ratio >= HALF_OPEN_RATIO_THRESHOLD:
-                alert(src_ip, "HALF_OPEN_TCP", syn_fin_ratio)
-
+            ratio = conn["syn"] / conn["fin"]
+            if ratio >= HALF_OPEN_RATIO_THRESHOLD:
+                alert(src_ip, "HALF_OPEN_TCP", ratio)
         short_conn_history[src_ip] = sh
 
 # -----------------------------
-# PACKET WORKER THREAD
+# PACKET WORKER
 # -----------------------------
 def packet_worker():
-    """
-    Worker thread: processes packets from the queue.
-    Handles DNS, analysis, CSV logging, and dynamic queue resizing.
-    """
     global dynamic_queue_max
-
     while True:
         packet = packet_queue.get()
         if packet is None:
             break
 
-        # skip non-IP packets
         if IP not in packet:
             packet_queue.task_done()
             continue
 
-        # timestamp & basic info
         ts = datetime.now().isoformat()
         src_ip = packet[IP].src
         dst_ip = packet[IP].dst
@@ -256,33 +275,29 @@ def packet_worker():
 
         resolve_dns(dst_ip)
 
-        # -----------------------------
-        # Analysis + auto-labeling
-        # -----------------------------
+        # auto-labeling + analysis
         analyze(packet, src_ip, dst_ip, dst_port)
-
-        # auto-label suspicious packets if any alert fired recently
         suspicious = 0
         for (ip, alert_type), alert_ts in alert_last_fired.items():
             if ip == src_ip and now() - alert_ts < ALERT_COOLDOWN:
                 suspicious = 1
                 break
 
-        # destination flags
-        is_private = int(dst_ip.startswith(("10.", "172.16.", "192.168.")))
+        is_private = int(dst_ip.startswith(("10.","172.16.","192.168.")))
         is_multicast = int(dst_ip.startswith("239.") or dst_ip == "255.255.255.255")
 
-        # write CSV
+        src_country, src_asn = enrich_geoip(src_ip)
+        src_sni = extract_sni(packet)
+
         packet_writer.writerow([
             ts, protocol, src_ip, dst_ip, src_port, dst_port,
-            pkt_len, flags, is_private, is_multicast, suspicious
+            pkt_len, flags, is_private, is_multicast, suspicious,
+            src_country, src_asn, src_sni
         ])
 
         packet_queue.task_done()
 
-        # -----------------------------
-        # Dynamic queue resizing
-        # -----------------------------
+        # dynamic queue resizing
         with queue_lock:
             qsize = packet_queue.qsize()
             if qsize > dynamic_queue_max * 0.8:
@@ -293,20 +308,16 @@ def packet_worker():
                 packet_queue.maxsize = dynamic_queue_max
 
 # -----------------------------
-# PACKET ENQUEUE CALLBACK
+# PACKET ENQUEUE
 # -----------------------------
 def enqueue_packet(packet):
-    """
-    Called by Scapy sniff() per packet.
-    Non-blocking enqueue; drops packets if queue is full.
-    """
     try:
         packet_queue.put_nowait(packet)
     except queue.Full:
         pass
 
 # -----------------------------
-# MAIN THREAD / SNIFFER
+# MAIN SNIFFER
 # -----------------------------
 worker = threading.Thread(target=packet_worker, daemon=True)
 worker.start()
