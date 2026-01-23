@@ -5,197 +5,218 @@ from datetime import datetime
 import socket
 import csv
 import time
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 
 # -----------------------------
 # CONFIG
 # -----------------------------
 CSV_FILE = "packet_log.csv"
+ALERT_FILE = "alerts.csv"
 INTERFACE = None
 CAPTURE_FILTER = "ip"
 
-# Security thresholds
+# Detection windows
 RATE_WINDOW = 10
+PORTSCAN_WINDOW = 10
+
+# Thresholds
 RATE_THRESHOLD = 300
 SYN_THRESHOLD = 100
-SHORT_CONN_THRESHOLD = 150
+PORTSCAN_PORTS = 50
 
-# Multicast/broadcast suppression
-SUPPRESSION_INTERVAL = 5      # seconds
-SUPPRESSION_MAX = 2           # max packets per interval
+# Alert cooldown (seconds)
+ALERT_COOLDOWN = 30
+
+# Queue
+INITIAL_QUEUE = 5000
+MAX_QUEUE = 50000
 
 # -----------------------------
 # GLOBALS
 # -----------------------------
-packet_queue = queue.Queue(maxsize=5000)  # initial size
-stats = Counter()
-ip_counter = Counter()
-host_traffic = Counter()
+packet_queue = queue.Queue(maxsize=INITIAL_QUEUE)
+
 dns_cache = {}
-packet_rate = defaultdict(list)
-syn_counter = Counter()
-fin_counter = Counter()
-security_warnings = set()
+packet_rate = defaultdict(deque)
+syn_counter = defaultdict(deque)
+port_counter = defaultdict(set)
 
-# Suppression tracking
-last_seen = {}  # last timestamp per IP
-suppression_count = defaultdict(int)
-
-# Queue dynamic resizing
+alert_last_fired = {}
 queue_lock = threading.Lock()
-dynamic_queue_max = 5000
+dynamic_queue_max = INITIAL_QUEUE
 
 # -----------------------------
-# LOGGING
+# CSV LOGGING
 # -----------------------------
+packet_csv = open(CSV_FILE, "w", newline="")
+packet_writer = csv.writer(packet_csv)
+packet_writer.writerow([
+    "timestamp",
+    "protocol",
+    "src_ip",
+    "dst_ip",
+    "src_port",
+    "dst_port",
+    "packet_len",
+    "tcp_flags",
+    "is_private_dst",
+    "is_multicast_dst",
+    "suspicious"
+])
 
-csvfile = open(CSV_FILE, "w", newline="")
-csv_writer = csv.writer(csvfile)
-csv_writer.writerow([
-    "timestamp","protocol","src_ip","src_port",
-    "dst_ip","dst_port","flags","destination"
+alert_csv = open(ALERT_FILE, "w", newline="")
+alert_writer = csv.writer(alert_csv)
+alert_writer.writerow([
+    "timestamp",
+    "src_ip",
+    "alert_type",
+    "value"
 ])
 
 # -----------------------------
-# DNS RESOLUTION
+# HELPERS
 # -----------------------------
-def resolve_destination(ip):
+def now():
+    return time.time()
+
+def alert(src_ip, alert_type, value):
+    key = (src_ip, alert_type)
+    last = alert_last_fired.get(key, 0)
+
+    if now() - last < ALERT_COOLDOWN:
+        return False
+
+    alert_last_fired[key] = now()
+    ts = datetime.now().isoformat()
+
+    print(f"[ALERT] {ts} {src_ip} {alert_type} {value}")
+    alert_writer.writerow([ts, src_ip, alert_type, value])
+    return True
+
+def resolve_dns(ip):
     if ip in dns_cache:
-        return dns_cache[ip]
+        return
     try:
         dns_cache[ip] = socket.gethostbyaddr(ip)[0]
     except:
         dns_cache[ip] = ip
-    return dns_cache[ip]
-
-def classify_destination_with_comment(ip):
-    comment = ""
-    if ip.startswith("239."):
-        comment = " (MULTICAST)"
-    elif ip == "255.255.255.255":
-        comment = " (BROADCAST)"
-    elif ip.startswith(("10.","172.16.","192.168.")):
-        comment = " (PRIVATE LAN)"
-    return f"{resolve_destination(ip)}{comment}"
 
 # -----------------------------
 # SECURITY ANALYSIS
 # -----------------------------
-def analyze_security(packet, src_ip):
-    now = time.time()
-    packet_rate[src_ip].append(now)
-    packet_rate[src_ip] = [t for t in packet_rate[src_ip] if now - t <= RATE_WINDOW]
+def analyze(packet, src_ip, dst_port):
+    t = now()
 
-    if len(packet_rate[src_ip]) > RATE_THRESHOLD:
-        security_warnings.add(f"High traffic rate from {src_ip}")
+    # Packet rate
+    pr = packet_rate[src_ip]
+    pr.append(t)
+    while pr and t - pr[0] > RATE_WINDOW:
+        pr.popleft()
 
+    if len(pr) > RATE_THRESHOLD:
+        alert(src_ip, "HIGH_PACKET_RATE", len(pr))
+
+    # TCP-specific
     if TCP in packet:
         flags = packet[TCP].flags
-        if flags == "S":
-            syn_counter[src_ip] += 1
-        if "F" in flags:
-            fin_counter[src_ip] += 1
-        if syn_counter[src_ip] > SYN_THRESHOLD and fin_counter[src_ip] < syn_counter[src_ip] // 2:
-            security_warnings.add(f"SYN-heavy behavior from {src_ip}")
-        if syn_counter[src_ip] + fin_counter[src_ip] > SHORT_CONN_THRESHOLD:
-            security_warnings.add(f"High short-lived TCP connection churn from {src_ip}")
+
+        if flags & 0x02:  # SYN
+            sc = syn_counter[src_ip]
+            sc.append(t)
+            while sc and t - sc[0] > RATE_WINDOW:
+                sc.popleft()
+
+            if len(sc) > SYN_THRESHOLD:
+                alert(src_ip, "SYN_FLOOD", len(sc))
+
+            # Port scan detection
+            pc = port_counter[src_ip]
+            pc.add(dst_port)
+
+            if len(pc) > PORTSCAN_PORTS:
+                alert(src_ip, "PORT_SCAN", len(pc))
 
 # -----------------------------
 # PACKET WORKER
 # -----------------------------
 def packet_worker():
     global dynamic_queue_max
+
     while True:
         packet = packet_queue.get()
         if packet is None:
             break
+
         if IP not in packet:
             packet_queue.task_done()
             continue
 
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        ts = datetime.now().isoformat()
         src_ip = packet[IP].src
         dst_ip = packet[IP].dst
+        pkt_len = len(packet)
 
-        stats["total"] += 1
-        ip_counter[src_ip] += 1
-        host_traffic[dst_ip] += 1
+        protocol = 0
+        src_port = 0
+        dst_port = 0
+        flags = 0
 
-        # DNS caching
+        if TCP in packet:
+            protocol = 6
+            src_port = packet[TCP].sport
+            dst_port = packet[TCP].dport
+            flags = int(packet[TCP].flags)
+        elif UDP in packet:
+            protocol = 17
+            src_port = packet[UDP].sport
+            dst_port = packet[UDP].dport
+        elif ICMP in packet:
+            protocol = 1
+
         if packet.haslayer(DNS) and packet[DNS].qr == 1:
             for i in range(packet[DNS].ancount):
                 ans = packet[DNS].an[i]
                 if ans.type == 1:
-                    dns_cache[ans.rdata] = ans.rrname.decode(errors="ignore").rstrip(".")
+                    dns_cache[ans.rdata] = ans.rrname.decode(errors="ignore")
 
-        # Security analysis
-        analyze_security(packet, src_ip)
+        resolve_dns(dst_ip)
 
-        # Rate-limited suppression for chatty destinations
-        dst_comment = ""
-        if dst_ip.startswith("239."):
-            dst_comment = "MULTICAST"
-        elif dst_ip == "255.255.255.255":
-            dst_comment = "BROADCAST"
-        elif dst_ip.startswith(("10.","172.16.","192.168.")):
-            dst_comment = "PRIVATE LAN"
+        suspicious = 0
+        analyze(packet, src_ip, dst_port)
 
-        now_time = time.time()
-        if dst_comment:
-            last_time, count = last_seen.get(dst_ip, (0,0))
-            if now_time - last_time > SUPPRESSION_INTERVAL:
-                # Reset interval
-                last_seen[dst_ip] = (now_time, 1)
-            else:
-                if count >= SUPPRESSION_MAX:
-                    packet_queue.task_done()
-                    continue
-                else:
-                    last_seen[dst_ip] = (last_time, count + 1)
+        if any(
+            k[0] == src_ip and now() - v < ALERT_COOLDOWN
+            for k, v in alert_last_fired.items()
+        ):
+            suspicious = 1
 
-        # Protocol classification
-        protocol, src_port, dst_port, flags = "OTHER", "", "", ""
-        if TCP in packet:
-            protocol = "TCP"
-            src_port, dst_port = packet[TCP].sport, packet[TCP].dport
-            flags = packet[TCP].flags
-        elif UDP in packet:
-            src_port, dst_port = packet[UDP].sport, packet[UDP].dport
-            protocol = "QUIC" if packet[UDP].sport==443 or packet[UDP].dport==443 else "UDP"
-        elif ICMP in packet:
-            protocol = "ICMP"
-
-        destination = classify_destination_with_comment(dst_ip)
-        message = f"[{timestamp}] {protocol} {src_ip}:{src_port} -> {dst_ip}:{dst_port} FLAGS={flags} DEST={destination}"
-        print(message)
-        packet_len = len(packet)
-
-        is_private = int(dst_ip.startswith(("10.","172.16.","192.168.")))
+        is_private = int(dst_ip.startswith(("10.", "172.16.", "192.168.")))
         is_multicast = int(dst_ip.startswith("239.") or dst_ip == "255.255.255.255")
 
-        csv_writer.writerow([
-            timestamp,
+        packet_writer.writerow([
+            ts,
             protocol,
             src_ip,
             dst_ip,
             src_port,
             dst_port,
-            int(flags) if flags != "" else 0,
-            packet_len,
+            pkt_len,
+            flags,
             is_private,
-            is_multicast
+            is_multicast,
+            suspicious
         ])
-
 
         packet_queue.task_done()
 
         # Dynamic queue resizing
         with queue_lock:
-            if packet_queue.qsize() > dynamic_queue_max * 0.8:
-                dynamic_queue_max = min(dynamic_queue_max * 2, 50000)
+            qsize = packet_queue.qsize()
+            if qsize > dynamic_queue_max * 0.8:
+                dynamic_queue_max = min(dynamic_queue_max * 2, MAX_QUEUE)
                 packet_queue.maxsize = dynamic_queue_max
-            elif packet_queue.qsize() < dynamic_queue_max * 0.2:
-                dynamic_queue_max = max(dynamic_queue_max // 2, 5000)
+            elif qsize < dynamic_queue_max * 0.2:
+                dynamic_queue_max = max(dynamic_queue_max // 2, INITIAL_QUEUE)
                 packet_queue.maxsize = dynamic_queue_max
 
 # -----------------------------
@@ -205,18 +226,19 @@ def enqueue_packet(packet):
     try:
         packet_queue.put_nowait(packet)
     except queue.Full:
-        pass  # drop only if queue full
+        pass
 
-worker_thread = threading.Thread(target=packet_worker, daemon=True)
-worker_thread.start()
+worker = threading.Thread(target=packet_worker, daemon=True)
+worker.start()
 
-print("Packet sniffer running...")
-print(f"Text log: {LOG_FILE}") 
-print(f"CSV log: {CSV_FILE}") 
-print("Press CTRL+C to stop.\n")
+print("IDS sniffer running")
+print(f"Packets → {CSV_FILE}")
+print(f"Alerts  → {ALERT_FILE}")
+
 try:
     sniff(iface=INTERFACE, filter=CAPTURE_FILTER, prn=enqueue_packet, store=False)
 except KeyboardInterrupt:
     packet_queue.put(None)
-    worker_thread.join()
-    csvfile.close()
+    worker.join()
+    packet_csv.close()
+    alert_csv.close()
