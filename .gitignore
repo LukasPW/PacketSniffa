@@ -83,7 +83,7 @@ profile_default/
 ipython_config.py
 
 # Ignore log files
-packet_log.txt
+alerts.csv
 packet_log.csv
 
 
