@@ -10,7 +10,6 @@ from collections import Counter, defaultdict
 # -----------------------------
 # CONFIG
 # -----------------------------
-LOG_FILE = "packet_log.txt"
 CSV_FILE = "packet_log.csv"
 INTERFACE = None
 CAPTURE_FILTER = "ip"
@@ -49,9 +48,6 @@ dynamic_queue_max = 5000
 # -----------------------------
 # LOGGING
 # -----------------------------
-def log_to_file(message):
-    with open(LOG_FILE, "a") as f:
-        f.write(message + "\n")
 
 csvfile = open(CSV_FILE, "w", newline="")
 csv_writer = csv.writer(csvfile)
@@ -172,8 +168,25 @@ def packet_worker():
         destination = classify_destination_with_comment(dst_ip)
         message = f"[{timestamp}] {protocol} {src_ip}:{src_port} -> {dst_ip}:{dst_port} FLAGS={flags} DEST={destination}"
         print(message)
-        log_to_file(message)
-        csv_writer.writerow([timestamp, protocol, src_ip, src_port, dst_ip, dst_port, flags, destination])
+        packet_len = len(packet)
+
+        is_private = int(dst_ip.startswith(("10.","172.16.","192.168.")))
+        is_multicast = int(dst_ip.startswith("239.") or dst_ip == "255.255.255.255")
+
+        csv_writer.writerow([
+            timestamp,
+            protocol,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            int(flags) if flags != "" else 0,
+            packet_len,
+            is_private,
+            is_multicast
+        ])
+
+
         packet_queue.task_done()
 
         # Dynamic queue resizing
