@@ -52,7 +52,7 @@ It **only inspects metadata**, not packet payloads, so it’s ethical for testin
 Install Python dependencies:
 
 ```bash
-pip install scapy geoip2 pandas joblib
+pip install scapy geoip2 pandas joblib scikit-learn
 ```
 
 Note: On Windows, install Npcap. Enable "WinPcap Compatible Mode" if prompted.  

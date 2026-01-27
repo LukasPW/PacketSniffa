@@ -21,11 +21,11 @@ INTERFACE = None
 CAPTURE_FILTER = "ip"
 
 # GeoIP databases
-GEOIP_COUNTRY_DB = r"databases\GeoLite2-Country_20260120\GeoLite2-Country.mmdb"
-GEOIP_ASN_DB = r"databases\GeoLite2-ASN_20260123\GeoLite2-ASN.mmdb"
+GEOIP_COUNTRY_DB = r"Sniffa\databases\GeoLite2-Country_20260120\GeoLite2-Country.mmdb"
+GEOIP_ASN_DB = r"Sniffa\databases\GeoLite2-ASN_20260123\GeoLite2-ASN.mmdb"
 
 # ML model
-ML_MODEL_FILE = "decision_tree_model.pkl"
+ML_MODEL_FILE = r"Sniffa\decision_tree_model.pkl"
 
 # Detection windows / thresholds
 RATE_WINDOW = 10
