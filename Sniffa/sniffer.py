@@ -27,7 +27,7 @@ import stats
 
 CSV_FILE       = "packet_log.csv"
 ALERT_FILE     = "alerts.csv"
-INTERFACE      = conf.iface         # None = scapy picks the default interface
+INTERFACE      = "wlan0"#conf.iface         # None = scapy picks the default interface
 CAPTURE_FILTER = "ip"
 log_Private = True
 
@@ -74,6 +74,9 @@ ASN_SERVICE_MAP = {
     # CDNs
     54113: "FASTLY",
     20940: "AKAMAI",
+}
+KNOWN_HOSTS = {
+    "192.168.1.1": "HOME_ROUTER",
 }
 
 # ============================================================
@@ -369,6 +372,9 @@ def _packet_worker() -> None:
         # Update shared stats for the UI
         stats.record_packet(src_ip, proto, country, service)
         stats.queue_depth = packet_queue.qsize()
+
+        stats.record_log(ts, src_ip, dst_ip, proto,
+                 src_port, dst_port, country, service, pkt_len)
 
         packet_queue.task_done()
 

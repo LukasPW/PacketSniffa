@@ -75,3 +75,23 @@ def packets_per_second(window: float = 2.0) -> int:
     while _rate_timestamps and _rate_timestamps[0] < cutoff:
         _rate_timestamps.popleft()
     return int(len(_rate_timestamps) / window)
+
+# ── live packet log (capped at 500) ───────────────────────────────────────
+log_lock     = threading.Lock()
+recent_packets: deque = deque(maxlen=500)
+
+def record_log(ts: str, src_ip: str, dst_ip: str, proto: int,
+               src_port: int, dst_port: int, country: str,
+               service: str, pkt_len: int) -> None:
+    with log_lock:
+        recent_packets.appendleft({
+            "ts":       ts,
+            "src_ip":   src_ip,
+            "dst_ip":   dst_ip,
+            "proto":    proto,
+            "src_port": src_port,
+            "dst_port": dst_port,
+            "country":  country,
+            "service":  service,
+            "pkt_len":  pkt_len,
+        })

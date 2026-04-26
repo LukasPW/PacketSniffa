@@ -1,15 +1,14 @@
 """
-ui.py — Rich terminal dashboard for Sniffa.
 Run this file to start the IDS:  sudo python ui.py
 
 Layout (refreshes every second):
-┌─────────────────────────── header ────────────────────────────┐
-│  title · uptime · pkt/s · total packets · ML status           │
-├──────────────────┬──────────────────┬──────────────────────────┤
-│  proto breakdown │  top talkers     │  recent alerts           │
-├──────────────────┴──────────────────┤                          │
-│  country counts  │  service counts  │                          │
-└──────────────────┴──────────────────┴──────────────────────────┘
+┌─────────────────────────────── header ─────────────────────────────────┐
+│  title · uptime · pkt/s · total packets · ML status                    │
+├──────────────┬──────────────┬──────────────┬──────────────────────────-┤
+│  protocols   │  top talkers │  countries   │  services                 │
+├──────────────┴──────────────┴──────────────┴───────────────────────────┤
+│  live packet log (left)                  │  alerts (right)             │
+└──────────────────────────────────────────┴─────────────────────────────┘
 """
 
 import threading
@@ -23,26 +22,26 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 from rich.text import Text
-from rich.columns import Columns
 from rich.align import Align
 
 import stats
 import sniffer
 
 # ── colour palette ─────────────────────────────────────────────────────────
-C_TITLE   = "bold cyan"
-C_GOOD    = "green"
-C_WARN    = "yellow"
-C_ALERT   = "bold red"
-C_DIM     = "dim white"
-C_HEAD    = "bold white"
-C_ACCENT  = "bright_cyan"
+C_TITLE  = "bold cyan"
+C_GOOD   = "green"
+C_WARN   = "yellow"
+C_ALERT  = "bold red"
+C_DIM    = "dim white"
+C_HEAD   = "bold white"
+C_ACCENT = "bright_cyan"
 
-REFRESH_RATE = 1.0          # seconds between UI redraws
-TOP_TALKERS  = 8            # rows in the top-talkers table
+REFRESH_RATE  = 1.0
+TOP_TALKERS   = 8
 TOP_COUNTRIES = 8
 TOP_SERVICES  = 8
-MAX_ALERTS    = 12          # visible alert rows
+MAX_ALERTS    = 16
+MAX_LOG_ROWS  = 16
 
 PROTO_NAMES = {6: "TCP", 17: "UDP", 1: "ICMP", 0: "OTHER"}
 
@@ -62,7 +61,6 @@ def build_header() -> Panel:
     total = stats.total_packets
     drops = stats.dropped_packets
     ml    = "[green]ON[/]" if stats.ml_enabled else "[yellow]OFF[/]"
-
     drop_str = (f"  [red]dropped {drops:,}[/]" if drops else "")
 
     line = (
@@ -97,9 +95,9 @@ def build_proto_table() -> Panel:
 def build_top_talkers() -> Panel:
     t = Table(box=box.SIMPLE, show_header=True, header_style=C_HEAD,
               expand=True, padding=(0, 1))
-    t.add_column("#",      width=3, style=C_DIM)
-    t.add_column("Source IP",  style=C_ACCENT)
-    t.add_column("Packets", justify="right")
+    t.add_column("#",         width=3,  style=C_DIM)
+    t.add_column("Source IP", style=C_ACCENT)
+    t.add_column("Packets",   justify="right")
 
     sorted_talkers = sorted(
         stats.top_talkers.items(), key=lambda x: x[1], reverse=True
@@ -119,11 +117,9 @@ def build_country_table() -> Panel:
     t.add_column("CC",      width=7, style=C_ACCENT)
     t.add_column("Packets", justify="right")
 
-    sorted_cc = sorted(
+    for cc, count in sorted(
         stats.country_counts.items(), key=lambda x: x[1], reverse=True
-    )[:TOP_COUNTRIES]
-
-    for cc, count in sorted_cc:
+    )[:TOP_COUNTRIES]:
         t.add_row(cc, f"{count:,}")
 
     return Panel(t, title="[bold]Countries[/]", box=box.ROUNDED,
@@ -136,55 +132,85 @@ def build_service_table() -> Panel:
     t.add_column("Service", style=C_ACCENT)
     t.add_column("Packets", justify="right")
 
-    sorted_svc = sorted(
+    for svc, count in sorted(
         stats.service_counts.items(), key=lambda x: x[1], reverse=True
-    )[:TOP_SERVICES]
-
-    for svc, count in sorted_svc:
+    )[:TOP_SERVICES]:
         t.add_row(svc, f"{count:,}")
 
     return Panel(t, title="[bold]Services[/]", box=box.ROUNDED,
                  border_style="blue", padding=(0, 1))
 
 
-def build_alerts_panel() -> Panel:
+def build_live_log() -> Panel:
     t = Table(box=box.SIMPLE, show_header=True, header_style=C_HEAD,
               expand=True, padding=(0, 1))
     t.add_column("Time",    width=8,  style=C_DIM)
-    t.add_column("Source",  width=15, style=C_ACCENT)
-    t.add_column("Type",    width=18, style=C_WARN)
-    t.add_column("Val",     width=6,  justify="right")
+    t.add_column("Proto",   width=5,  style=C_ACCENT)
+    t.add_column("Src IP",  width=15, style=C_ACCENT)
+    t.add_column("Dst IP",  width=15)
+    t.add_column("Sport",   width=6,  justify="right", style=C_DIM)
+    t.add_column("Dport",   width=6,  justify="right", style=C_DIM)
+    t.add_column("CC",      width=4,  style=C_DIM)
+    t.add_column("Service", style=C_DIM)
+    t.add_column("Len",     width=6,  justify="right", style=C_DIM)
+
+    with stats.log_lock:
+        rows = list(stats.recent_packets)[:MAX_LOG_ROWS]
+
+    for p in rows:
+        try:
+            ts_short = p["ts"][11:19]
+        except Exception:
+            ts_short = p["ts"]
+
+        proto_name = PROTO_NAMES.get(p["proto"], "???")
+        t.add_row(
+            ts_short,
+            proto_name,
+            p["src_ip"],
+            p["dst_ip"],
+            str(p["src_port"]),
+            str(p["dst_port"]),
+            p["country"],
+            p["service"],
+            str(p["pkt_len"]),
+        )
+
+    return Panel(t, title="[bold]Live Log[/]", box=box.ROUNDED,
+                 border_style="green", padding=(0, 1))
+
+
+def build_alerts_panel() -> Panel:
+    t = Table(box=box.SIMPLE, show_header=True, header_style=C_HEAD,
+              expand=True, padding=(0, 1))
+    t.add_column("Time",   width=8,  style=C_DIM)
+    t.add_column("Source", width=15, style=C_ACCENT)
+    t.add_column("Type",   width=18, style=C_WARN)
+    t.add_column("Val",    width=6,  justify="right")
     t.add_column("Org / Service", style=C_DIM)
 
     with stats.alerts_lock:
         rows = list(stats.recent_alerts)[:MAX_ALERTS]
 
     for a in rows:
-        # Shorten timestamp to HH:MM:SS
         try:
             ts_short = a["ts"][11:19]
         except Exception:
             ts_short = a["ts"]
 
-        alert_style = C_ALERT if "FLOOD" in a["type"] or "SCAN" in a["type"] else C_WARN
-        org_svc = f"{a['org']}  {a['service']}"
-
+        alert_style = (C_ALERT if "FLOOD" in a["type"] or "SCAN" in a["type"]
+                       else C_WARN)
         t.add_row(
             ts_short,
             a["src_ip"],
             Text(a["type"], style=alert_style),
             str(a["value"]),
-            org_svc,
+            f"{a['org']}  {a['service']}",
         )
 
     total_str = f"[{C_DIM}]total {stats.total_alerts}[/]"
-    return Panel(
-        t,
-        title=f"[bold red]⚠  Alerts[/]  {total_str}",
-        box=box.ROUNDED,
-        border_style="red",
-        padding=(0, 1),
-    )
+    return Panel(t, title=f"[bold red]⚠  Alerts[/]  {total_str}",
+                 box=box.ROUNDED, border_style="red", padding=(0, 1))
 
 
 # ============================================================
@@ -195,28 +221,21 @@ def build_layout() -> Layout:
     root = Layout()
 
     root.split_column(
-        Layout(name="header",  size=3),
-        Layout(name="body"),
+        Layout(name="header", size=3),
+        Layout(name="top",    ratio=2),
+        Layout(name="bottom", ratio=3),
     )
 
-    root["body"].split_row(
-        Layout(name="left",   ratio=3),
-        Layout(name="alerts", ratio=2),
-    )
-
-    root["left"].split_column(
-        Layout(name="top_row",    ratio=2),
-        Layout(name="bottom_row", ratio=2),
-    )
-
-    root["top_row"].split_row(
+    root["top"].split_row(
         Layout(name="proto"),
         Layout(name="talkers"),
-    )
-
-    root["bottom_row"].split_row(
         Layout(name="countries"),
         Layout(name="services"),
+    )
+
+    root["bottom"].split_row(
+        Layout(name="live_log", ratio=3),
+        Layout(name="alerts",   ratio=2),
     )
 
     return root
@@ -228,6 +247,7 @@ def refresh_layout(layout: Layout) -> None:
     layout["talkers"].update(build_top_talkers())
     layout["countries"].update(build_country_table())
     layout["services"].update(build_service_table())
+    layout["live_log"].update(build_live_log())
     layout["alerts"].update(build_alerts_panel())
 
 
@@ -241,14 +261,13 @@ def main() -> None:
         "[dim](Ctrl+C to quit)[/]\n"
     )
 
-    # Start the sniffer in a background thread so the Rich Live
-    # display can own the main thread (Rich requires this)
     sniffer_thread = threading.Thread(target=sniffer.start, daemon=True)
     sniffer_thread.start()
 
     layout = build_layout()
 
-    with Live(layout, console=console, refresh_per_second=int(1 / REFRESH_RATE),
+    with Live(layout, console=console,
+              refresh_per_second=int(1 / REFRESH_RATE),
               screen=True) as live:
         try:
             while True:
@@ -257,9 +276,11 @@ def main() -> None:
         except KeyboardInterrupt:
             pass
 
-    console.print("\n[bold cyan]Sniffa[/] stopped. Logs saved to "
-                  f"[green]{sniffer.CSV_FILE}[/] and "
-                  f"[green]{sniffer.ALERT_FILE}[/]\n")
+    console.print(
+        "\n[bold cyan]Sniffa[/] stopped. Logs saved to "
+        f"[green]{sniffer.CSV_FILE}[/] and "
+        f"[green]{sniffer.ALERT_FILE}[/]\n"
+    )
 
 
 if __name__ == "__main__":
