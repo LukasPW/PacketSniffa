@@ -1,11 +1,11 @@
-# 🛡️ Network Packet Sniffer & IDS (Python)
+# Network Packet Sniffer & IDS (Python)
 
 ![Python Version](https://img.shields.io/badge/python-3.8+-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
-## 🌐 Overview
+## Overview
 
 This project is a **Python-based network packet sniffer and lightweight IDS** for:
 
@@ -17,13 +17,13 @@ It **only inspects metadata**, not packet payloads, so it’s ethical for testin
 
 ---
 
-## ⚠️ Disclaimer
+## Disclaimer
 
 ## Intended for educational and diagnostic use **only** on networks you own or are authorized to test. Unauthorized sniffing is illegal.
 
 ---
 
-## ⚡ Features
+## Features
 
 | Feature                        | Description                                                      |
 | ------------------------------ | ---------------------------------------------------------------- |
@@ -39,7 +39,7 @@ It **only inspects metadata**, not packet payloads, so it’s ethical for testin
 
 ---
 
-## 🛠️ Requirements
+## Requirements
 
 - Python 3.8+
 - [Scapy](https://scapy.net/)
@@ -60,7 +60,7 @@ On Linux/macOS, ensure libpcap is installed and run as root.
 
 ---
 
-## 🚀 Running the Sniffer/IDS
+## Running the Sniffer/IDS
 
 1. Open terminal as administrator/root
 2. Navigate to project folder
@@ -79,7 +79,7 @@ Press `CTRL+C` to stop. Program closes files & threads safely.
 
 ---
 
-## 🔎 Security & Privacy Notes
+## Security & Privacy Notes
 
 - No payload inspection (no URLs, messages, or user data)
 - Metadata only: IPs, ports, protocols, packet length, TCP flags
@@ -88,7 +88,7 @@ Press `CTRL+C` to stop. Program closes files & threads safely.
 
 ---
 
-## 📝 Git Ignore Instructions
+## Git Ignore Instructions
 
 Add to `.gitignore` to avoid committing logs:
 
@@ -106,7 +106,7 @@ git commit -m "Ignore log files"
 
 ---
 
-## 🎯 Learning Goals
+## Learning Goals
 
 - Understand network protocols (TCP, UDP, ICMP, QUIC)
 - Explore DNS resolution, GeoIP, ASN mapping
@@ -115,7 +115,7 @@ git commit -m "Ignore log files"
 
 ---
 
-## ⚠️ IDS Thresholds & Rules
+## IDS Thresholds & Rules
 
 | Alert Type       | Condition / Threshold             | Notes                                |
 | ---------------- | --------------------------------- | ------------------------------------ |
@@ -128,7 +128,7 @@ git commit -m "Ignore log files"
 
 ---
 
-## 🛠️ Quick Legend
+## Quick Legend
 
 | Symbol / Label | Meaning                                    |
 | -------------- | ------------------------------------------ |
